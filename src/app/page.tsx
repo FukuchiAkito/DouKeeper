@@ -1,103 +1,195 @@
-import Image from "next/image";
+﻿"use client";
+
+import { useCallback, useEffect, useState } from "react";
+import { fetchAuthSession, signInWithRedirect, signOut } from "aws-amplify/auth";
+import { DashboardStats } from "@/components/organisms/DashboardStats";
+import { DistributionHistory } from "@/components/organisms/DistributionHistory";
+import { EventManager } from "@/components/organisms/EventManager";
+import { WorkForm } from "@/components/organisms/WorkForm";
+import { WorkList } from "@/components/organisms/WorkList";
+
+type AuthStatus = "checking" | "signedIn" | "signedOut";
+
+type UserInfo = {
+  email: string | null;
+};
+
+const getEmailFromIdToken = (tokenPayload: Record<string, unknown> | undefined) => {
+  if (!tokenPayload) {
+    return null;
+  }
+
+  const emailClaim = tokenPayload.email;
+  return typeof emailClaim === "string" ? emailClaim : null;
+};
+
+const isAmplifyError = (error: unknown, name: string) =>
+  typeof error === "object" &&
+  error !== null &&
+  "name" in error &&
+  (error as { name?: string }).name === name;
 
 export default function Home() {
-  return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+  const [status, setStatus] = useState<AuthStatus>("checking");
+  const [userInfo, setUserInfo] = useState<UserInfo>({ email: null });
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+  const loadSession = useCallback(async () => {
+    try {
+      const session = await fetchAuthSession();
+      const idToken = session.tokens?.idToken;
+
+      if (idToken) {
+        setUserInfo({ email: getEmailFromIdToken(idToken.payload) });
+        setStatus("signedIn");
+        return true;
+      }
+    } catch (error) {
+      console.error("Failed to fetch auth session", error);
+    }
+
+    setUserInfo({ email: null });
+    setStatus("signedOut");
+    return false;
+  }, []);
+
+  useEffect(() => {
+    const initAuth = async () => {
+      const url = new URL(window.location.href);
+      const hadCode = url.searchParams.has("code");
+      const hadState = url.searchParams.has("state");
+
+      const signedIn = await loadSession();
+
+      if (hadCode || hadState) {
+        url.searchParams.delete("code");
+        url.searchParams.delete("state");
+        const cleanedSearch = url.searchParams.toString();
+        const cleanedUrl = cleanedSearch ? `${url.pathname}?${cleanedSearch}` : url.pathname;
+        window.history.replaceState({}, "", cleanedUrl + url.hash);
+      }
+
+      if (signedIn) {
+        setErrorMessage(null);
+      } else if (hadCode) {
+        setErrorMessage("サインインに失敗しました。もう一度お試しください。");
+      }
+    };
+
+    void initAuth();
+  }, [loadSession]);
+
+  const startSignIn = async () => {
+    try {
+      setErrorMessage(null);
+      await signInWithRedirect();
+    } catch (error) {
+      if (isAmplifyError(error, "UserAlreadyAuthenticatedException")) {
+        await loadSession();
+        setErrorMessage(null);
+        return;
+      }
+
+      console.error("Failed to start sign-in redirect", error);
+      setErrorMessage("サインインを開始できませんでした。");
+    }
+  };
+
+  const startSignOut = async () => {
+    try {
+      setErrorMessage(null);
+      await signOut({ global: true });
+    } catch (error) {
+      console.error("Failed to sign out", error);
+      setErrorMessage("サインアウトに失敗しました。");
+    } finally {
+      await loadSession();
+    }
+  };
+
+  if (status === "checking") {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-slate-100">
+        <div className="text-sm text-slate-500">認証状態を確認しています...</div>
+      </main>
+    );
+  }
+
+  if (status === "signedOut") {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-slate-100">
+        <div className="w-full max-w-md space-y-6 rounded-2xl bg-white p-8 shadow-xl">
+          <div className="space-y-2">
+            <span className="text-sm font-semibold text-indigo-500">DouKeeper</span>
+            <h1 className="text-2xl font-bold text-slate-900">サインインが必要です</h1>
+            <p className="text-sm text-slate-600">
+              CognitoのHosted UIにリダイレクトして、ダッシュボードにアクセスしてください。
+            </p>
+          </div>
+          {errorMessage && (
+            <p className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600">
+              {errorMessage}
+            </p>
+          )}
+          <button
+            type="button"
+            onClick={startSignIn}
+            className="w-full rounded-lg bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700"
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+            Cognitoでサインイン
+          </button>
         </div>
       </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
-    </div>
+    );
+  }
+
+  return (
+    <main className="min-h-screen bg-slate-100">
+      {errorMessage && (
+        <div className="bg-red-50 py-3 text-center text-sm text-red-600">
+          {errorMessage}
+        </div>
+      )}
+      <div className="mx-auto flex max-w-6xl flex-col gap-10 px-4 py-10 md:px-8 lg:px-10">
+        <header className="overflow-hidden rounded-3xl bg-gradient-to-br from-indigo-500 via-indigo-600 to-slate-900 text-white shadow-lg">
+          <div className="space-y-6 px-6 py-10 sm:px-10">
+            <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
+              <div className="space-y-3">
+                <span className="inline-flex items-center rounded-full bg-white/20 px-3 py-1 text-xs font-semibold tracking-wide text-white/90">
+                  DouKeeper MVP
+                </span>
+                <h1 className="text-3xl font-bold leading-snug sm:text-4xl">
+                  在庫と頒布記録をひと目で把握
+                </h1>
+                <p className="max-w-2xl text-base text-white/80 sm:text-lg">
+                  DouKeeperは、イベント当日の忙しさの中でも在庫と頒布状況を確認できるように設計されたWebアプリです。作品登録、頒布記録、イベント管理までワンストップでサポートします。
+                </p>
+              </div>
+              <div className="flex items-center gap-3 self-start rounded-full bg-white/10 px-4 py-2 text-sm text-white/90">
+                {userInfo.email && <span>{userInfo.email}</span>}
+                <button
+                  type="button"
+                  onClick={startSignOut}
+                  className="rounded-full border border-white/40 px-4 py-1 text-xs font-semibold uppercase tracking-wide text-white transition hover:bg-white/20"
+                >
+                  サインアウト
+                </button>
+              </div>
+            </div>
+            <DashboardStats />
+          </div>
+        </header>
+
+        <section className="space-y-6">
+          <WorkForm />
+          <WorkList />
+        </section>
+
+        <section className="grid gap-6 lg:grid-cols-2">
+          <DistributionHistory />
+          <EventManager />
+        </section>
+      </div>
+    </main>
   );
 }
